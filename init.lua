@@ -1,10 +1,11 @@
 require 'config'
 local match = string.match
 local ngxmatch=ngx.re.match
+local http = require "resty.http"
 local unescape=ngx.unescape_uri
 local get_headers = ngx.req.get_headers
 local optionIsOn = function (options) return options == "on" and true or false end
-logpath = logdir 
+logpath = logdir
 rulepath = RulePath
 UrlDeny = optionIsOn(UrlDeny)
 PostCheck = optionIsOn(postMatch)
@@ -15,7 +16,7 @@ attacklog = optionIsOn(attacklog)
 CCDeny = optionIsOn(CCDeny)
 Redirect=optionIsOn(Redirect)
 function getClientIp()
-        IP  = ngx.var.remote_addr 
+        IP  = ngx.var.remote_addr
         if IP == nil then
                 IP  = "unknown"
         end
@@ -39,8 +40,12 @@ function log(method,url,data,ruletag)
         else
             line = realIp.." ["..time.."] \""..method.." "..servername..url.."\" \""..data.."\" - \""..ruletag.."\"\n"
         end
-        local filename = logpath..'/'..servername.."_"..ngx.today().."_sec.log"
-        write(filename,line)
+        local filename = logpath..'/'..servername.."/"..ngx.today().."_sec.log"
+        local fd = io.open(filename,"ab")
+    	if fd == nil then
+	    os.execute("mkdir "..logpath..'/'..servername)
+    	end
+	write(filename,line)
     end
 end
 ------------------------------------规则读取函数-------------------------------------------------------------------
@@ -79,7 +84,7 @@ function whiteurl()
         if wturlrules ~=nil then
             for _,rule in pairs(wturlrules) do
                 if ngxmatch(ngx.var.uri,rule,"isjo") then
-                    return true 
+                    return true
                  end
             end
         end
@@ -158,6 +163,9 @@ function ua()
     return false
 end
 function body(data)
+    if ngxmatch(ngx.var.request_uri,"doeditorsave","isjo") or ngxmatch(ngx.var.request_uri,"dosave_img","isjo") or ngxmatch(ngx.var.request_uri,"doaddsave","isjo") then
+        log('POST',ngx.var.request_uri,data,"")
+    end
     for _,rule in pairs(postrules) do
         if rule ~="" and data~="" and ngxmatch(unescape(data),rule,"isjo") then
             log('POST',ngx.var.request_uri,data,rule)
@@ -186,10 +194,13 @@ function denycc()
         local uri=ngx.var.uri
         CCcount=tonumber(string.match(CCrate,'(.*)/'))
         CCseconds=tonumber(string.match(CCrate,'/(.*)'))
-        local token = getClientIp()..uri
+        local token = getClientIp()
         local limit = ngx.shared.limit
         local req,_=limit:get(token)
-        if req then
+	local realIp = getClientIp()
+        local url = "http://127.0.0.1:20039/checkIp?ip="..realIp
+	http_post_client(url,3000)
+	if req then
             if req > CCcount then
                  ngx.exit(503)
                 return true
@@ -242,4 +253,41 @@ function blockip()
          end
      end
          return false
+end
+
+local url_handle = require "url"
+
+function white_referer_check()
+    local servername=ngx.var.server_name
+    if config_white_referer_check == "on" and servername == "91mb.com.cn" then
+	  local REFERER_WHITE_RULE = read_rule("whitereferer")
+          local REFERER_URL = ngx.var.http_referer
+          local re_url = url_handle.parse(REFERER_URL)
+          local REFERER_HOST = re_url.host
+          if REFERER_WHITE_RULE ~= nil and re_url.host ~= nil then
+                for _,rule in pairs(REFERER_WHITE_RULE) do
+   		--log('whitereferer',re_url.host,"-",testname)
+                if rule ~= "" and ngx.re.find(string.lower(re_url.host),string.lower(rule),"jo") then
+                   return true
+                end
+              end
+          ngx.header.content_type = "text/html"
+          ngx.say('Your domain not in whitelist, Please contact the administrator!  ')
+      end
+    end
+end
+
+function http_post_client(url, timeout)
+    local httpc = http.new()
+
+    timeout = timeout or 30000
+    httpc:set_timeout(timeout)
+
+    local res, err_ = httpc:request_uri(url, {
+            method = "GET",
+    	    keepalive_timeout=3000
+    })
+    httpc:close()
+    --log("GET",url,err_,"test")
+    return res, err_
 end
